@@ -550,14 +550,27 @@ def select_site_articles(
 
 def _smtp_settings(recipient: str) -> dict[str, str] | None:
     password = os.environ.get("SES_SMTP_PASSWORD", "").strip()
-    if not password:
-        return None
+    if password:
+        defaults = {
+            "host": "email-smtp.us-east-1.amazonaws.com",
+            "user": DEFAULT_SENDER,
+            "sender": DEFAULT_SENDER,
+        }
+    else:
+        password = os.environ.get("ETIK_SMTP_PASSWORD", "").strip()
+        if not password:
+            return None
+        defaults = {
+            "host": "mail.infomaniak.com",
+            "user": "info@clearbris.com",
+            "sender": "info@clearbris.com",
+        }
     return {
-        "host": os.environ.get("SES_SMTP_HOST", "email-smtp.us-east-1.amazonaws.com"),
+        "host": os.environ.get("SES_SMTP_HOST", defaults["host"]),
         "port": os.environ.get("SES_SMTP_PORT", "587"),
-        "user": os.environ.get("SES_SMTP_USER", DEFAULT_SENDER),
+        "user": os.environ.get("SES_SMTP_USER", defaults["user"]),
         "password": password,
-        "sender": os.environ.get("SES_SMTP_FROM", DEFAULT_SENDER),
+        "sender": os.environ.get("SES_SMTP_FROM", defaults["sender"]),
         "sender_name": os.environ.get("SES_SENDER_NAME", SITE_NAME),
         "configuration_set": os.environ.get("SES_CONFIGURATION_SET", "").strip(),
         "list_unsubscribe_url": os.environ.get("SES_LIST_UNSUBSCRIBE_URL", "").strip(),

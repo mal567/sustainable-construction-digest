@@ -313,7 +313,21 @@ class TestSiteArticles:
 class TestSmtpSettings:
     def test_returns_none_without_password(self, monkeypatch):
         monkeypatch.delenv("SES_SMTP_PASSWORD", raising=False)
+        monkeypatch.delenv("ETIK_SMTP_PASSWORD", raising=False)
         assert construction_digest._smtp_settings("test@example.com") is None
+
+    def test_etik_fallback_uses_infomaniak_defaults(self, monkeypatch):
+        monkeypatch.delenv("SES_SMTP_PASSWORD", raising=False)
+        monkeypatch.delenv("SES_SMTP_HOST", raising=False)
+        monkeypatch.delenv("SES_SMTP_PORT", raising=False)
+        monkeypatch.delenv("SES_SMTP_USER", raising=False)
+        monkeypatch.delenv("SES_SMTP_FROM", raising=False)
+        monkeypatch.setenv("ETIK_SMTP_PASSWORD", "etik-secret")
+        settings = construction_digest._smtp_settings("test@example.com")
+        assert settings["host"] == "mail.infomaniak.com"
+        assert settings["user"] == "info@clearbris.com"
+        assert settings["sender"] == "info@clearbris.com"
+        assert settings["password"] == "etik-secret"
 
     def test_builds_settings_from_environment(self, monkeypatch):
         monkeypatch.setenv("SES_SMTP_PASSWORD", "secret-password")
