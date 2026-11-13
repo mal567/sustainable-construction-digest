@@ -6,7 +6,7 @@ A Mistral Workflow that produces a weekly digest of sustainable construction and
 
 - Workflow `sustainable-construction-digest` (see `src/worker/workflows/construction_digest.py`):
   1. `fetch_articles` — fetches all configured RSS feeds, filters entries for sustainability keywords (green building, net zero, embodied carbon, retrofit, Passivhaus, …), dedupes, and ranks by recency.
-  2. `fetch_site_posts` — pulls the latest posts from the WordPress REST API (`/wp-json/wp/v2/posts`); failures never break the run.
+  2. `fetch_site_articles` — pulls recent posts from the site's own RSS feed (`https://sustainableconstructionreview.com/feed/`) to feature in a dedicated section; failures never break the run.
   3. `filter_relevant_articles` — keeps keyword matches plus model-picked relevant items, and records a decision (included/rejected with reason) for every candidate.
   4. `market_briefing` — asks `mistral-small-latest` for a hyperlinked market briefing (prose plus key developments); it leads the digest.
   5. `categorize_articles` — assigns each selected article to exactly one section (Policy & regulation, Green materials, Net-zero & energy, Technology, Projects & case studies, Industry news, Other).
@@ -56,21 +56,9 @@ SES handles tracking natively — no code changes needed:
 3. Set `SES_CONFIGURATION_SET` to the configuration set name — every digest email is then tagged and tracked automatically.
 4. Optional: set a **custom redirect domain** (e.g. `link.sustainableconstructionreview.com`) in the configuration set's tracking options and add the CNAME record, so tracked links carry the site's branding.
 
-## WordPress site posts
+## Site posts
 
-`fetch_site_posts` reads `https://sustainableconstructionreview.com/wp-json/wp/v2/posts`. The endpoint currently returns 401 behind Cloudflare; pick one of these to let the workflow through:
-
-- **Secret header (recommended):** add a Cloudflare WAF custom rule that *Skips* all managed rules for requests matching
-  `(starts_with(http.request.uri.path, "/wp-json/wp/v2/") and http.request.method eq "GET" and http.request.headers["x-digest-token"][0] eq "<your-secret>")`
-  and set `WP_API_TOKEN` to the same secret.
-- **WordPress application password:** create a user + application password in WP Admin and set `WP_API_USER` / `WP_API_APP_PASSWORD` (sent as Basic auth).
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `WP_API_BASE` | `https://sustainableconstructionreview.com` | WordPress base URL. |
-| `WP_API_TOKEN` | — | Sent as the `X-Digest-Token` header (for the Cloudflare skip rule). |
-| `WP_API_USER` | — | WP username for Basic auth (optional). |
-| `WP_API_APP_PASSWORD` | — | WP application password for Basic auth (optional). |
+`fetch_site_articles` reads the site's public RSS feed — no authentication or Cloudflare changes needed. Posts from the last `lookback_hours` are featured (up to `max_site_posts`) in the **From Sustainable Construction Review** section, right after the market briefing, and never count against the `max_articles` cap.
 
 ## Local development
 
@@ -84,4 +72,4 @@ Run a worker locally with `MISTRAL_API_KEY` set in `.env` (see `.env.example`).
 
 ## Deployment
 
-Managed deployment builds from this repository with `deploy/docker/Dockerfile.worker`. Push the branch, then create/redeploy the deployment pinned to the commit SHA, bind the SES and WordPress secrets, and add a **weekly schedule trigger** (e.g. Mondays 07:00 Europe/London).
+Managed deployment builds from this repository with `deploy/docker/Dockerfile.worker`. Push the branch, then create/redeploy the deployment pinned to the commit SHA, bind the SES secrets, and add a **weekly schedule trigger** (e.g. Mondays 07:00 Europe/London).

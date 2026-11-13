@@ -1,7 +1,7 @@
 """Weekly sustainable construction news digest workflow.
 
-Fetches RSS feeds from construction and sustainability outlets plus recent
-posts from sustainableconstructionreview.com, uses a Mistral model to pick
+Fetches RSS feeds from construction and sustainability outlets plus the site's
+own feed at sustainableconstructionreview.com, uses a Mistral model to pick
 the relevant stories and write a market briefing, and emails a branded
 digest via Amazon SES. Email sending is skipped until the ``SES_SMTP_PASSWORD``
 workspace secret is bound to the deployment.
@@ -19,9 +19,9 @@ from pydantic import BaseModel
 
 SITE_NAME = "Sustainable Construction Review"
 SITE_TAGLINE = "News and insight for the low-carbon built environment"
+SITE_FEED = "https://sustainableconstructionreview.com/feed/"
 DEFAULT_SENDER = "newsletter@sustainableconstructionreview.com"
 DEFAULT_RECIPIENT = "newsletter@sustainableconstructionreview.com"
-DEFAULT_WP_API_BASE = "https://sustainableconstructionreview.com"
 SUMMARY_MODEL = "mistral-small-latest"
 MAX_CANDIDATES = 200
 
@@ -110,13 +110,7 @@ class Article(BaseModel):
     published: datetime | None = None
     summary: str = ""
     keyword_match: bool = False
-
-
-class SitePost(BaseModel):
-    title: str
-    url: str
-    published: datetime | None = None
-    excerpt: str = ""
+    from_site: bool = False
 
 
 class EmailResult(BaseModel):
@@ -146,8 +140,8 @@ class FetchResult(BaseModel):
     stats: FetchStats = FetchStats()
 
 
-class SitePostsResult(BaseModel):
-    posts: list[SitePost] = []
+class SiteArticlesResult(BaseModel):
+    articles: list[Article] = []
     status: str = ""
 
 
@@ -254,12 +248,12 @@ def build_headlines_md(articles: list[Article]) -> str:
     return "\n".join(lines)
 
 
-def build_site_posts_md(posts: list[SitePost]) -> str:
+def build_site_posts_md(posts: list[Article]) -> str:
     lines = []
     for post in posts:
         line = f"- [{post.title}]({post.url})"
-        if post.excerpt:
-            line += f" — {post.excerpt}"
+        if post.summary:
+            line += f" — {post.summary}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -339,7 +333,7 @@ def render_digest(
     briefing: str,
     date_str: str,
     assignments: list[SectionAssignment] | None = None,
-    site_posts: list[SitePost] | None = None,
+    site_posts: list[Article] | None = None,
 ) -> str:
     parts = [
         f"# {SITE_NAME} — Weekly Digest — {date_str}",
@@ -359,8 +353,9 @@ def render_digest(
                 section = assignment.section if assignment.section in SECTION_NAMES else "Other"
                 by_section[section].append((article, assignment.note))
     for article in articles:
-        if article.url not in assigned_urls:
-            by_section["Other"].append((article, ""))
+        if article.from_site or article.url in assigned_urls:
+            continue
+        by_section["Other"].append((article, ""))
     for name in SECTION_NAMES:
         items = by_section[name]
         if not items:
@@ -502,69 +497,33 @@ def build_briefing_prompt(articles: list[Article], date_str: str) -> str:
     )
 
 
-def _wp_headers() -> dict[str, str]:
-    import base64
-
-    headers = {"User-Agent": "sustainable-construction-digest/0.1"}
-    token = os.environ.get("WP_API_TOKEN", "").strip()
-    if token:
-        headers["X-Digest-Token"] = token
-    user = os.environ.get("WP_API_USER", "").strip()
-    password = os.environ.get("WP_API_APP_PASSWORD", "").strip()
-    if user and password:
-        credentials = base64.b64encode(f"{user}:{password}".encode()).decode()
-        headers["Authorization"] = f"Basic {credentials}"
-    return headers
-
-
-def _strip_html(text: str) -> str:
-    import html
-    import re
-
-    stripped = re.sub(r"<[^>]+>", "", text or "")
-    return html.unescape(stripped).strip()
-
-
-def _parse_site_posts(payload: Any, limit: int) -> list[SitePost]:
-    posts: list[SitePost] = []
-    if not isinstance(payload, list):
-        return posts
-    for item in payload[:limit]:
-        if not isinstance(item, dict):
+def select_site_articles(
+    entries: list[Any],
+    lookback_hours: int,
+    max_posts: int,
+    now: datetime | None = None,
+) -> list[Article]:
+    """Turn recent entries from the site's own feed into featured site posts."""
+    now = now or datetime.now(UTC)
+    cutoff = now - timedelta(hours=lookback_hours)
+    articles: list[Article] = []
+    for entry in entries:
+        url = str(entry.get("link", "")).strip()
+        published = _parse_published(entry)
+        if not url or published is None or published < cutoff:
             continue
-        title = _strip_html(str((item.get("title") or {}).get("rendered", "")))
-        url = str(item.get("link", "")).strip()
-        if not url:
-            continue
-        published = None
-        raw_date = str(item.get("date_gmt") or item.get("date") or "").strip()
-        if raw_date:
-            try:
-                published = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
-                if published.tzinfo is None:
-                    published = published.replace(tzinfo=UTC)
-            except ValueError:
-                published = None
-        excerpt = _strip_html(str((item.get("excerpt") or {}).get("rendered", "")))
-        if len(excerpt) > 300:
-            excerpt = excerpt[:297].rstrip() + "..."
-        posts.append(SitePost(title=title or url, url=url, published=published, excerpt=excerpt))
-    return posts
-
-
-def _fetch_site_posts(base_url: str, per_page: int) -> list[SitePost]:
-    import httpx
-
-    url = f"{base_url.rstrip('/')}/wp-json/wp/v2/posts"
-    response = httpx.get(
-        url,
-        params={"per_page": per_page, "_fields": "title,link,date_gmt,date,excerpt"},
-        headers=_wp_headers(),
-        timeout=20.0,
-        follow_redirects=True,
-    )
-    response.raise_for_status()
-    return _parse_site_posts(response.json(), per_page)
+        articles.append(
+            Article(
+                title=str(entry.get("title", "")).strip() or url,
+                url=url,
+                source=SITE_NAME,
+                published=published,
+                summary=_clean_summary(entry, limit=200),
+                from_site=True,
+            )
+        )
+    articles.sort(key=lambda a: a.published, reverse=True)
+    return articles[:max_posts]
 
 
 def _smtp_settings(recipient: str) -> dict[str, str] | None:
@@ -671,14 +630,15 @@ async def fetch_articles(lookback_hours: int, max_candidates: int = MAX_CANDIDAT
 
 
 @workflows.activity(start_to_close_timeout=timedelta(seconds=60), retry_policy_max_attempts=1)
-async def fetch_site_posts(max_posts: int, base_url: str = DEFAULT_WP_API_BASE) -> SitePostsResult:
-    """Fetch recent posts from the WordPress REST API; failures never break the run."""
+async def fetch_site_articles(max_posts: int, lookback_hours: int) -> SiteArticlesResult:
+    """Fetch recent posts from the site's own RSS feed; failures never break the run."""
     try:
-        posts = _fetch_site_posts(base_url, max_posts)
-        return SitePostsResult(posts=posts, status=f"fetched {len(posts)} posts")
+        entries = _parse_feed(_fetch_feed(SITE_FEED))
+        posts = select_site_articles(entries, lookback_hours, max_posts)
+        return SiteArticlesResult(articles=posts, status=f"fetched {len(posts)} posts")
     except Exception as error:
-        print(f"site posts fetch failed: {error}")
-        return SitePostsResult(posts=[], status=f"unavailable: {error}")
+        print(f"site feed fetch failed: {error}")
+        return SiteArticlesResult(articles=[], status=f"unavailable: {error}")
 
 
 @workflows.activity(start_to_close_timeout=timedelta(seconds=240), retry_policy_max_attempts=2)
@@ -814,8 +774,8 @@ class SustainableConstructionDigestWorkflow:
     async def run(self, input: DigestInput) -> DigestOutput:
         date_str = await today_str()
         fetch_result = await fetch_articles(input.lookback_hours)
-        site_posts_result = await fetch_site_posts(input.max_site_posts)
-        if not fetch_result.articles and not site_posts_result.posts:
+        site_posts_result = await fetch_site_articles(input.max_site_posts, input.lookback_hours)
+        if not fetch_result.articles and not site_posts_result.articles:
             empty_digest = (
                 f"# {SITE_NAME} — Weekly Digest — {date_str}\n\n"
                 f"No news candidates found in the last {input.lookback_hours} hours.\n"
@@ -837,7 +797,7 @@ class SustainableConstructionDigestWorkflow:
         report = await filter_relevant_articles(fetch_result, input.max_articles)
         articles = report.selected
         self.selection_report = report
-        if not articles and not site_posts_result.posts:
+        if not articles and not site_posts_result.articles:
             empty_digest = (
                 f"# {SITE_NAME} — Weekly Digest — {date_str}\n\n"
                 f"No relevant news found in the last {input.lookback_hours} hours.\n"
@@ -863,7 +823,7 @@ class SustainableConstructionDigestWorkflow:
             briefing,
             date_str,
             assignments,
-            site_posts_result.posts,
+            site_posts_result.articles,
         )
         self.pending_digest = digest_markdown
         if input.dry_run:

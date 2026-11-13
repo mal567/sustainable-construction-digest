@@ -6,7 +6,6 @@ from worker.workflows import construction_digest
 from worker.workflows.construction_digest import (
     Article,
     DigestInput,
-    SitePost,
     build_headlines_md,
     build_relevance_prompt,
     build_briefing_prompt,
@@ -99,10 +98,10 @@ class TestRendering:
             "- [Retrofit funding doubled](https://x.com/2) — Construction Enquirer"
         )
 
-    def test_build_site_posts_md_includes_excerpts(self):
+    def test_build_site_posts_md_includes_summaries(self):
         posts = [
-            SitePost(title="Timber towers", url="https://site.com/a", excerpt="Mass timber rises."),
-            SitePost(title="Policy watch", url="https://site.com/b"),
+            Article(title="Timber towers", url="https://site.com/a", source="SCR", summary="Mass timber rises."),
+            Article(title="Policy watch", url="https://site.com/b", source="SCR"),
         ]
         markdown = build_site_posts_md(posts)
         assert markdown == (
@@ -121,12 +120,20 @@ class TestRendering:
 
     def test_render_digest_features_site_posts_after_briefing(self):
         articles = [Article(title="Cement breakthrough", url="https://x.com/1", source="edie")]
-        posts = [SitePost(title="Our latest analysis", url="https://site.com/a")]
+        posts = [Article(title="Our latest analysis", url="https://site.com/a", source="Sustainable Construction Review", from_site=True)]
         markdown = render_digest(articles, "Briefing.", "09 November 2026", [], posts)
         assert "## From Sustainable Construction Review" in markdown
         assert "[Our latest analysis](https://site.com/a)" in markdown
         assert markdown.index("## Market Briefing") < markdown.index("## From Sustainable Construction Review")
         assert markdown.index("## From Sustainable Construction Review") < markdown.index("## Other")
+
+    def test_render_digest_keeps_from_site_articles_out_of_news_sections(self):
+        articles = [
+            Article(title="Cement breakthrough", url="https://x.com/1", source="edie"),
+            Article(title="Our latest analysis", url="https://site.com/a", source="Sustainable Construction Review", from_site=True),
+        ]
+        markdown = render_digest(articles, "Briefing.", "09 November 2026", [])
+        assert "[Our latest analysis](https://site.com/a)" not in markdown.split("## From")[0]
 
     def test_render_digest_groups_by_section(self):
         articles = [
@@ -231,69 +238,53 @@ class TestParseRelevantIndices:
             construction_digest._parse_relevant_indices("no json here", total=2)
 
 
-class TestSitePosts:
-    def test_parse_site_posts_extracts_fields(self):
-        payload = [
-            {
-                "title": {"rendered": "<p>Timber towers rise</p>"},
-                "link": "https://sustainableconstructionreview.com/timber-towers",
-                "date_gmt": "2026-11-09T10:30:00",
-                "excerpt": {"rendered": "<p>Mass timber &amp; low-carbon design.</p>"},
-            }
+class TestSiteArticles:
+    def test_select_site_articles_marks_and_caps(self):
+        now = datetime.now(UTC)
+        entries = [
+            _entry(f"Site post {i}", f"https://sustainableconstructionreview.com/{i}", published=now - timedelta(hours=i))
+            for i in range(7)
         ]
-        posts = construction_digest._parse_site_posts(payload, 5)
-        assert len(posts) == 1
-        assert posts[0].title == "Timber towers rise"
-        assert posts[0].url == "https://sustainableconstructionreview.com/timber-towers"
-        assert posts[0].published == datetime(2026, 11, 9, 10, 30, tzinfo=UTC)
-        assert posts[0].excerpt == "Mass timber & low-carbon design."
+        posts = construction_digest.select_site_articles(entries, lookback_hours=168, max_posts=5, now=now)
+        assert len(posts) == 5
+        assert all(p.from_site is True for p in posts)
+        assert all(p.source == construction_digest.SITE_NAME for p in posts)
+        assert posts[0].url == "https://sustainableconstructionreview.com/0"
 
-    def test_parse_site_posts_skips_items_without_links(self):
-        payload = [
-            {"title": {"rendered": "No link"}, "link": ""},
-            {"title": {"rendered": "Fine"}, "link": "https://site.com/fine"},
+    def test_select_site_articles_drops_stale_and_undated(self):
+        now = datetime.now(UTC)
+        entries = [
+            _entry("Stale post", "https://sustainableconstructionreview.com/stale", published=now - timedelta(hours=200)),
+            _entry("Undated post", "https://sustainableconstructionreview.com/undated"),
+            _entry("Fresh post", "https://sustainableconstructionreview.com/fresh", published=now - timedelta(hours=2)),
         ]
-        posts = construction_digest._parse_site_posts(payload, 5)
-        assert [p.url for p in posts] == ["https://site.com/fine"]
+        posts = construction_digest.select_site_articles(entries, lookback_hours=168, max_posts=5, now=now)
+        assert [p.url for p in posts] == ["https://sustainableconstructionreview.com/fresh"]
 
-    def test_parse_site_posts_handles_non_list(self):
-        assert construction_digest._parse_site_posts({"error": 401}, 5) == []
+    async def test_fetch_site_articles_activity_survives_failure(self, monkeypatch):
+        def broken(url: str) -> bytes:
+            raise RuntimeError("connection refused")
 
-    def test_wp_headers_include_token(self, monkeypatch):
-        monkeypatch.setenv("WP_API_TOKEN", "secret-token")
-        monkeypatch.delenv("WP_API_USER", raising=False)
-        monkeypatch.delenv("WP_API_APP_PASSWORD", raising=False)
-        headers = construction_digest._wp_headers()
-        assert headers["X-Digest-Token"] == "secret-token"
-        assert "Authorization" not in headers
-
-    def test_wp_headers_include_basic_auth(self, monkeypatch):
-        import base64
-
-        monkeypatch.delenv("WP_API_TOKEN", raising=False)
-        monkeypatch.setenv("WP_API_USER", "digest-agent")
-        monkeypatch.setenv("WP_API_APP_PASSWORD", "app-pass")
-        headers = construction_digest._wp_headers()
-        expected = base64.b64encode(b"digest-agent:app-pass").decode()
-        assert headers["Authorization"] == f"Basic {expected}"
-
-    async def test_fetch_site_posts_activity_survives_failure(self, monkeypatch):
-        def broken(base_url: str, per_page: int):
-            raise RuntimeError("401 unauthorized")
-
-        monkeypatch.setattr(construction_digest, "_fetch_site_posts", broken)
-        result = await construction_digest.fetch_site_posts(5)
-        assert result.posts == []
+        monkeypatch.setattr(construction_digest, "_fetch_feed", broken)
+        result = await construction_digest.fetch_site_articles(5, 168)
+        assert result.articles == []
         assert "unavailable" in result.status
 
-    async def test_fetch_site_posts_activity_returns_posts(self, monkeypatch):
-        def fake_fetch(base_url: str, per_page: int):
-            return [SitePost(title="Post", url="https://site.com/post")]
+    async def test_fetch_site_articles_activity_returns_posts(self, monkeypatch):
+        now = datetime.now(UTC)
 
-        monkeypatch.setattr(construction_digest, "_fetch_site_posts", fake_fetch)
-        result = await construction_digest.fetch_site_posts(5)
+        def fake_fetch(url: str) -> bytes:
+            return b"<rss></rss>"
+
+        def fake_parse(content: bytes):
+            return [_entry("Our latest analysis", "https://sustainableconstructionreview.com/latest", published=now)]
+
+        monkeypatch.setattr(construction_digest, "_fetch_feed", fake_fetch)
+        monkeypatch.setattr(construction_digest, "_parse_feed", fake_parse)
+        result = await construction_digest.fetch_site_articles(5, 168)
         assert result.status == "fetched 1 posts"
-        assert result.posts[0].url == "https://site.com/post"
+        assert result.articles[0].from_site is True
+        assert result.articles[0].url == "https://sustainableconstructionreview.com/latest"
 
 
 class TestSmtpSettings:
