@@ -571,6 +571,8 @@ def select_site_articles(
         published = _parse_published(entry)
         if not url or published is None or published < cutoff:
             continue
+        if _is_industry_roundup(_entry_categories(entry)):
+            continue
         articles.append(
             Article(
                 title=_entry_title(entry, url),
@@ -774,12 +776,20 @@ def _fetch_site_post_details() -> dict[str, dict[str, Any]]:
     return details
 
 
+def _entry_categories(entry: Any) -> list[str]:
+    return [str(tag.get("term", "") or tag.get("label", "")) for tag in entry.get("tags") or []]
+
+
+def _is_industry_roundup(categories: list[str]) -> bool:
+    return any(name.strip().lower() == "industry news" for name in categories)
+
+
 def merge_site_details(posts: list[Article], details: dict[str, dict[str, Any]]) -> list[Article]:
-    """Attach featured images and drop aggregated 'Industry news' roundup posts."""
+    """Attach featured images and drop aggregated 'Industry News' roundup posts."""
     kept: list[Article] = []
     for post in posts:
         info = details.get(post.url.rstrip("/"), {})
-        if "Industry news" in info.get("categories", []):
+        if _is_industry_roundup(info.get("categories", [])):
             continue
         post.image_url = post.image_url or info.get("image_url", "")
         kept.append(post)

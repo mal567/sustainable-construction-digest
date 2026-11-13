@@ -653,3 +653,19 @@ class TestSitePostDetails:
         kept = construction_digest.merge_site_details(posts, {})
         assert len(kept) == 1
         assert kept[0].image_url == ""
+
+
+class TestIndustryRoundupFilter:
+    def test_feed_category_filter_is_case_insensitive(self):
+        now = datetime.now(UTC)
+        roundup = _entry("News roundup", "https://site.com/b", published=now)
+        roundup["tags"] = [{"term": "Industry News"}]
+        technical = _entry("Timber towers", "https://site.com/a", published=now)
+        technical["tags"] = [{"term": "Research"}]
+        posts = construction_digest.select_site_articles([roundup, technical], lookback_hours=168, max_posts=5, now=now)
+        assert [p.url for p in posts] == ["https://site.com/a"]
+
+    def test_merge_site_details_roundup_check_is_case_insensitive(self):
+        posts = [Article(title="News roundup", url="https://site.com/b", source="SCR", from_site=True)]
+        details = {"https://site.com/b": {"image_url": "x.jpg", "categories": ["INDUSTRY NEWS"]}}
+        assert construction_digest.merge_site_details(posts, details) == []
