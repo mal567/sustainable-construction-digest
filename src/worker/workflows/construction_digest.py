@@ -565,27 +565,29 @@ def select_site_articles(
     """Turn recent entries from the site's own feed into featured site posts."""
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(hours=lookback_hours)
-    articles: list[Article] = []
+    technical: list[Article] = []
+    roundups: list[Article] = []
     for entry in entries:
         url = str(entry.get("link", "")).strip()
         published = _parse_published(entry)
         if not url or published is None or published < cutoff:
             continue
-        if _is_industry_roundup(_entry_categories(entry)):
-            continue
-        articles.append(
-            Article(
-                title=_entry_title(entry, url),
-                url=url,
-                source=SITE_NAME,
-                published=published,
-                summary=_clean_summary(entry, limit=200),
-                image_url=_entry_image(entry),
-                from_site=True,
-            )
+        article = Article(
+            title=_entry_title(entry, url),
+            url=url,
+            source=SITE_NAME,
+            published=published,
+            summary=_clean_summary(entry, limit=200),
+            image_url=_entry_image(entry),
+            from_site=True,
         )
-    articles.sort(key=lambda a: a.published, reverse=True)
-    return articles[:max_posts]
+        if _is_industry_roundup(_entry_categories(entry)):
+            roundups.append(article)
+        else:
+            technical.append(article)
+    technical.sort(key=lambda a: a.published, reverse=True)
+    roundups.sort(key=lambda a: a.published, reverse=True)
+    return (technical + roundups)[:max_posts]
 
 
 def _ses_smtp_password(secret_access_key: str) -> str:
@@ -785,22 +787,19 @@ def _is_industry_roundup(categories: list[str]) -> bool:
 
 
 def merge_site_details(posts: list[Article], details: dict[str, dict[str, Any]]) -> list[Article]:
-    """Attach featured images and drop aggregated 'Industry News' roundup posts."""
-    kept: list[Article] = []
+    """Attach featured images from the WP REST API when the feed had none."""
     for post in posts:
         info = details.get(post.url.rstrip("/"), {})
-        if _is_industry_roundup(info.get("categories", [])):
-            continue
         post.image_url = post.image_url or info.get("image_url", "")
-        kept.append(post)
-    return kept
+    return posts
 
 
 @workflows.activity(start_to_close_timeout=timedelta(seconds=60), retry_policy_max_attempts=1)
 async def fetch_site_articles(max_posts: int, lookback_hours: int) -> SiteArticlesResult:
     """Fetch recent posts from the site's own RSS feed; failures never break the run."""
     try:
-        entries = _parse_feed(_fetch_feed(SITE_FEED))
+        feed_url = f"{SITE_FEED}?digestcache={int(datetime.now(UTC).timestamp())}"
+        entries = _parse_feed(_fetch_feed(feed_url))
         posts = select_site_articles(entries, lookback_hours, max_posts * 3)
         posts = merge_site_details(posts, _fetch_site_post_details())[:max_posts]
         return SiteArticlesResult(articles=posts, status=f"fetched {len(posts)} posts")

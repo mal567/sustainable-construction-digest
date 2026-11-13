@@ -629,7 +629,7 @@ class TestDigestInputDefaults:
 
 
 class TestSitePostDetails:
-    def test_merge_site_details_attaches_images_and_drops_roundups(self):
+    def test_merge_site_details_attaches_images_without_dropping(self):
         posts = [
             Article(title="Timber towers", url="https://site.com/a", source="SCR", from_site=True),
             Article(title="News roundup", url="https://site.com/b", source="SCR", from_site=True),
@@ -645,8 +645,9 @@ class TestSitePostDetails:
             },
         }
         kept = construction_digest.merge_site_details(posts, details)
-        assert [p.url for p in kept] == ["https://site.com/a"]
+        assert [p.url for p in kept] == ["https://site.com/a", "https://site.com/b"]
         assert kept[0].image_url == "https://site.com/img.jpg"
+        assert kept[1].image_url == "https://site.com/b.jpg"
 
     def test_merge_site_details_keeps_posts_without_details(self):
         posts = [Article(title="Timber towers", url="https://site.com/a/", source="SCR", from_site=True)]
@@ -656,16 +657,37 @@ class TestSitePostDetails:
 
 
 class TestIndustryRoundupFilter:
-    def test_feed_category_filter_is_case_insensitive(self):
+    def test_technical_posts_preferred_over_roundups(self):
         now = datetime.now(UTC)
         roundup = _entry("News roundup", "https://site.com/b", published=now)
         roundup["tags"] = [{"term": "Industry News"}]
         technical = _entry("Timber towers", "https://site.com/a", published=now)
         technical["tags"] = [{"term": "Research"}]
-        posts = construction_digest.select_site_articles([roundup, technical], lookback_hours=168, max_posts=5, now=now)
+        posts = construction_digest.select_site_articles([roundup, technical], lookback_hours=168, max_posts=1, now=now)
         assert [p.url for p in posts] == ["https://site.com/a"]
 
-    def test_merge_site_details_roundup_check_is_case_insensitive(self):
-        posts = [Article(title="News roundup", url="https://site.com/b", source="SCR", from_site=True)]
-        details = {"https://site.com/b": {"image_url": "x.jpg", "categories": ["INDUSTRY NEWS"]}}
-        assert construction_digest.merge_site_details(posts, details) == []
+    def test_roundups_kept_when_no_technical_posts(self):
+        now = datetime.now(UTC)
+        roundup = _entry("News roundup", "https://site.com/b", published=now)
+        roundup["tags"] = [{"term": "Industry News"}]
+        posts = construction_digest.select_site_articles([roundup], lookback_hours=168, max_posts=5, now=now)
+        assert [p.url for p in posts] == ["https://site.com/b"]
+
+    def test_roundup_filter_is_case_insensitive(self):
+        now = datetime.now(UTC)
+        roundup = _entry("News roundup", "https://site.com/b", published=now)
+        roundup["tags"] = [{"term": "INDUSTRY NEWS"}]
+        technical = _entry("Timber towers", "https://site.com/a", published=now)
+        technical["tags"] = [{"term": "research"}]
+        posts = construction_digest.select_site_articles([roundup, technical], lookback_hours=168, max_posts=2, now=now)
+        assert [p.url for p in posts] == ["https://site.com/a", "https://site.com/b"]
+
+    def test_roundups_fill_remaining_slots_after_technical_posts(self):
+        now = datetime.now(UTC)
+        older = now - timedelta(hours=2)
+        roundup = _entry("News roundup", "https://site.com/b", published=now)
+        roundup["tags"] = [{"term": "Industry News"}]
+        technical = _entry("Timber towers", "https://site.com/a", published=older)
+        technical["tags"] = [{"term": "Research"}]
+        posts = construction_digest.select_site_articles([roundup, technical], lookback_hours=168, max_posts=2, now=now)
+        assert [p.url for p in posts] == ["https://site.com/a", "https://site.com/b"]
