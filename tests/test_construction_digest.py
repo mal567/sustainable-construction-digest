@@ -23,6 +23,29 @@ def _entry(title: str, link: str, summary: str = "", published=None):
     return entry
 
 
+class TestTitleAndSummaryCleaning:
+    def test_google_news_title_suffix_does_not_trigger_keyword_match(self):
+        now = datetime.now(UTC)
+        entry = {
+            "title": "Scotland's Health Awards 2026: The best of the NHS recognised - Trending Now Sustainable Construction",
+            "link": "https://x.com/nhs",
+            "summary": '<a href="https://x.com/nhs">Scotland Health Awards</a>&nbsp;<font>Trending Now Sustainable Construction</font>',
+            "source": {"title": "Trending Now Sustainable Construction"},
+            "published_parsed": now.timetuple()[:6],
+        }
+        articles = select_articles([("Google News", [entry])], lookback_hours=168, max_candidates=10, now=now)
+        assert len(articles) == 1
+        assert articles[0].keyword_match is False
+        assert "Trending Now" not in articles[0].title
+        assert "Trending Now" not in articles[0].summary
+
+    def test_summary_html_is_stripped_for_prompts(self):
+        now = datetime.now(UTC)
+        entry = _entry("Retrofit grants open", "https://x.com/1", summary="<p>Grants &amp; funding</p>", published=now)
+        articles = select_articles([("Test", [entry])], lookback_hours=168, max_candidates=10, now=now)
+        assert articles[0].summary == "Grants & funding"
+
+
 class TestSelectArticles:
     def test_marks_keyword_matches_and_keeps_all_fresh_items(self):
         now = datetime.now(UTC)

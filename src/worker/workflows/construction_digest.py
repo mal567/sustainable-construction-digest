@@ -170,8 +170,26 @@ def _matches_sustainability(text: str) -> bool:
     return any(keyword in lowered for keyword in SUSTAINABILITY_KEYWORDS)
 
 
+def _strip_html(text: str) -> str:
+    import html as html_module
+    import re
+
+    stripped = re.sub(r"<[^>]+>", " ", text or "")
+    return re.sub(r"\s+", " ", html_module.unescape(stripped)).strip()
+
+
+def _entry_title(entry: Any, url: str) -> str:
+    title = _strip_html(str(entry.get("title", "")))
+    outlet = entry.get("source", {})
+    outlet_name = str(outlet.get("title", "")).strip() if outlet else ""
+    suffix = f" - {outlet_name}"
+    if outlet_name and title.lower().endswith(suffix.lower()):
+        title = title[: -len(suffix)].rstrip()
+    return title or url
+
+
 def _entry_text(entry: Any) -> str:
-    parts = [entry.get("title", ""), entry.get("summary", "")]
+    parts = [_entry_title(entry, ""), _clean_summary(entry)]
     return " ".join(str(part) for part in parts if part)
 
 
@@ -186,7 +204,11 @@ def _parse_published(entry: Any) -> datetime | None:
 
 
 def _clean_summary(entry: Any, limit: int = 400) -> str:
-    summary = str(entry.get("summary", "")).strip()
+    summary = _strip_html(str(entry.get("summary", "")))
+    outlet = entry.get("source", {})
+    outlet_name = str(outlet.get("title", "")).strip() if outlet else ""
+    if outlet_name:
+        summary = summary.replace(outlet_name, "").strip().rstrip("-").strip()
     if len(summary) > limit:
         summary = summary[: limit - 3].rstrip() + "..."
     return summary
@@ -224,7 +246,7 @@ def select_articles(
             outlet_name = str(outlet.get("title", "")).strip() if outlet else ""
             articles.append(
                 Article(
-                    title=str(entry.get("title", "")).strip() or url,
+                    title=_entry_title(entry, url),
                     url=url,
                     source=outlet_name or source_name,
                     published=published,
@@ -514,7 +536,7 @@ def select_site_articles(
             continue
         articles.append(
             Article(
-                title=str(entry.get("title", "")).strip() or url,
+                title=_entry_title(entry, url),
                 url=url,
                 source=SITE_NAME,
                 published=published,
