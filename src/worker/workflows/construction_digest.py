@@ -665,9 +665,19 @@ def _send_email(settings: dict[str, str], recipient: str, subject: str, body_mar
         message["List-Unsubscribe"] = f"<{settings['list_unsubscribe_url']}>"
         message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     port = int(settings["port"])
+    user = settings["user"]
+    password = settings["password"]
+    print(
+        "SMTP auth diagnostics:"
+        f" host={settings['host']} port={port}"
+        f" user_len={len(user)} user_prefix={user[:6]!r} user_suffix={user[-4:]!r}"
+        f" pass_len={len(password)} pass_prefix={password[:2]!r}"
+        f" user_unstripped={user != user.strip()} pass_unstripped={password != password.strip()}"
+        f" pass_quoted={password[:1] in ('\"', "'")}"
+    )
     with smtplib.SMTP(settings["host"], port, timeout=30) as server:
         server.starttls()
-        server.login(settings["user"], settings["password"])
+        server.login(user, password)
         server.send_message(message)
 
 
