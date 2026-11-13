@@ -1,3 +1,4 @@
+import base64
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -313,7 +314,29 @@ class TestSiteArticles:
 class TestSmtpSettings:
     def test_returns_none_without_password(self, monkeypatch):
         monkeypatch.delenv("SES_SMTP_PASSWORD", raising=False)
+        monkeypatch.delenv("SES_IAM_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("SES_IAM_SECRET_KEY", raising=False)
         monkeypatch.delenv("ETIK_SMTP_PASSWORD", raising=False)
+        assert construction_digest._smtp_settings("test@example.com") is None
+
+    def test_derives_smtp_password_from_iam_keys(self, monkeypatch):
+        monkeypatch.delenv("SES_SMTP_PASSWORD", raising=False)
+        monkeypatch.delenv("ETIK_SMTP_PASSWORD", raising=False)
+        monkeypatch.setenv("SES_IAM_ACCESS_KEY", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("SES_IAM_SECRET_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        settings = construction_digest._smtp_settings("test@example.com")
+        assert settings["user"] == "AKIAIOSFODNN7EXAMPLE"
+        assert len(settings["password"]) == 44
+        decoded = base64.b64decode(settings["password"])
+        assert decoded[0] == 0x04
+        assert len(decoded) == 33
+        assert settings["host"] == "email-smtp.us-east-1.amazonaws.com"
+
+    def test_derivation_requires_access_key(self, monkeypatch):
+        monkeypatch.delenv("SES_SMTP_PASSWORD", raising=False)
+        monkeypatch.delenv("ETIK_SMTP_PASSWORD", raising=False)
+        monkeypatch.delenv("SES_IAM_ACCESS_KEY", raising=False)
+        monkeypatch.setenv("SES_IAM_SECRET_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
         assert construction_digest._smtp_settings("test@example.com") is None
 
     def test_etik_fallback_uses_infomaniak_defaults(self, monkeypatch):

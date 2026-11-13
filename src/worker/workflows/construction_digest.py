@@ -548,12 +548,33 @@ def select_site_articles(
     return articles[:max_posts]
 
 
+def _ses_smtp_password(secret_access_key: str) -> str:
+    """Derive the SES SMTP password from an IAM secret access key (AWS-documented algorithm)."""
+    import base64
+    import hashlib
+    import hmac
+
+    key = ("AWS4" + secret_access_key).encode("utf-8")
+    signature = hmac.new(key, b"SendRawEmail", hashlib.sha256).digest()
+    return base64.b64encode(b"\x04" + signature).decode()
+
+
 def _smtp_settings(recipient: str) -> dict[str, str] | None:
     password = os.environ.get("SES_SMTP_PASSWORD", "").strip()
+    user_default = DEFAULT_SENDER
+    if password:
+        pass
+    elif os.environ.get("SES_IAM_SECRET_KEY", "").strip():
+        access_key = os.environ.get("SES_IAM_ACCESS_KEY", "").strip()
+        secret_key = os.environ["SES_IAM_SECRET_KEY"].strip()
+        if not access_key:
+            return None
+        password = _ses_smtp_password(secret_key)
+        user_default = access_key
     if password:
         defaults = {
             "host": "email-smtp.us-east-1.amazonaws.com",
-            "user": DEFAULT_SENDER,
+            "user": user_default,
             "sender": DEFAULT_SENDER,
         }
     else:
