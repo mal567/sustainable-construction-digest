@@ -118,8 +118,8 @@ class TestRendering:
         ]
         markdown = build_headlines_md(articles)
         assert markdown == (
-            "- [Cement breakthrough](https://x.com/1) — edie\n"
-            "- [Retrofit funding doubled](https://x.com/2) — Construction Enquirer"
+            "- [Cement breakthrough](https://x.com/1)\n"
+            "- [Retrofit funding doubled](https://x.com/2)"
         )
 
     def test_build_site_posts_md_includes_summaries(self):
@@ -129,18 +129,52 @@ class TestRendering:
         ]
         markdown = build_site_posts_md(posts)
         assert markdown == (
-            "- [Timber towers](https://site.com/a) — Mass timber rises.\n"
-            "- [Policy watch](https://site.com/b)"
+            "**[Timber towers](https://site.com/a)**\n\nMass timber rises.\n\n"
+            "**[Policy watch](https://site.com/b)**"
         )
+
+    def test_build_site_posts_md_includes_images(self):
+        posts = [
+            Article(
+                title="Timber towers",
+                url="https://site.com/a",
+                source="SCR",
+                summary="Mass timber rises.",
+                image_url="https://site.com/img.jpg",
+            ),
+            Article(title="Policy watch", url="https://site.com/b", source="SCR"),
+        ]
+        markdown = build_site_posts_md(posts)
+        assert '<img src="https://site.com/img.jpg"' in markdown
+        assert 'href="https://site.com/a"' in markdown
+        assert "img" not in markdown.split("**[Policy watch]")[0].split("</a>")[-1]
+
+    def test_entry_image_prefers_media_and_falls_back_to_content_img(self):
+        entry = {
+            "media_content": [{"url": "https://site.com/featured.jpg"}],
+            "summary": '<p><img src="https://site.com/inline.jpg"></p>',
+        }
+        assert construction_digest._entry_image(entry) == "https://site.com/featured.jpg"
+        assert construction_digest._entry_image({"summary": '<img src="https://site.com/inline.jpg">'}) == (
+            "https://site.com/inline.jpg"
+        )
+        assert construction_digest._entry_image({}) == ""
 
     def test_render_digest_structure_without_assignments(self):
         articles = [Article(title="Cement breakthrough", url="https://x.com/1", source="edie")]
         markdown = render_digest(articles, "A quiet week in green building.", "09 November 2026")
-        assert markdown.startswith("# Sustainable Construction Review — Weekly Digest — 09 November 2026")
-        assert "## Market Briefing" in markdown
+        assert markdown.startswith("## Market briefing — 09 November 2026")
+        assert "# Sustainable Construction Review — Weekly Digest" not in markdown
         assert "A quiet week in green building." in markdown
-        assert markdown.index("## Market Briefing") < markdown.index("## Other")
+        assert markdown.index("## Market briefing") < markdown.index("## Other")
         assert "[Cement breakthrough](https://x.com/1)" in markdown
+
+    def test_render_digest_strips_briefing_title(self):
+        articles = [Article(title="Cement breakthrough", url="https://x.com/1", source="edie")]
+        briefing = "### Market Briefing: Sustainable Construction & Green Building – 09 November 2026\n\nA quiet week."
+        markdown = render_digest(articles, briefing, "09 November 2026")
+        assert "Market Briefing: Sustainable Construction" not in markdown
+        assert "A quiet week." in markdown
 
     def test_render_digest_features_site_posts_after_briefing(self):
         articles = [Article(title="Cement breakthrough", url="https://x.com/1", source="edie")]
@@ -148,7 +182,7 @@ class TestRendering:
         markdown = render_digest(articles, "Briefing.", "09 November 2026", [], posts)
         assert "## From Sustainable Construction Review" in markdown
         assert "[Our latest analysis](https://site.com/a)" in markdown
-        assert markdown.index("## Market Briefing") < markdown.index("## From Sustainable Construction Review")
+        assert markdown.index("## Market briefing") < markdown.index("## From Sustainable Construction Review")
         assert markdown.index("## From Sustainable Construction Review") < markdown.index("## Other")
 
     def test_render_digest_keeps_from_site_articles_out_of_news_sections(self):
@@ -175,8 +209,9 @@ class TestRendering:
         assert "## Green materials" in markdown
         assert "## Projects & case studies" in markdown
         assert "## Technology" not in markdown
-        assert "[Building standards tightened](https://x.com/1) — edie: Part L" in markdown
-        assert markdown.index("## Market Briefing") < markdown.index("## Policy & regulation")
+        assert "[Building standards tightened](https://x.com/1): Part L" in markdown
+        assert "— edie" not in markdown
+        assert markdown.index("## Market briefing") < markdown.index("## Policy & regulation")
 
     def test_render_digest_unknown_section_goes_to_other(self):
         articles = [Article(title="Odd item", url="https://x.com/1", source="S")]
@@ -207,6 +242,7 @@ class TestRendering:
         articles = [Article(title="Low-carbon concrete plant", url="https://x.com/1", source="edie", summary="20% less")]
         prompt = build_sections_prompt(articles)
         assert '"Green materials"' in prompt and '"Other"' in prompt
+        assert '"Research & papers"' in prompt
         assert "0. [edie] Low-carbon concrete plant" in prompt
         assert '"assignments"' in prompt
 

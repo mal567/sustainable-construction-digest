@@ -51,6 +51,7 @@ SOURCES: list[dict[str, str]] = [
     {"name": "Google News · low carbon concrete", "url": _google_news_url("low carbon concrete")},
     {"name": "Google News · embodied carbon buildings", "url": _google_news_url("embodied carbon buildings")},
     {"name": "Google News · net zero construction", "url": _google_news_url("net zero construction")},
+    {"name": "arXiv · computers and society", "url": "https://export.arxiv.org/rss/cs.CE"},
 ]
 
 SUSTAINABILITY_KEYWORDS: tuple[str, ...] = (
@@ -89,6 +90,7 @@ SECTION_NAMES: tuple[str, ...] = (
     "Technology",
     "Projects & case studies",
     "Industry news",
+    "Research & papers",
     "Other",
 )
 
@@ -109,6 +111,7 @@ class Article(BaseModel):
     source: str
     published: datetime | None = None
     summary: str = ""
+    image_url: str = ""
     keyword_match: bool = False
     from_site: bool = False
 
@@ -203,6 +206,22 @@ def _parse_published(entry: Any) -> datetime | None:
         return None
 
 
+def _entry_image(entry: Any) -> str:
+    import re
+
+    for key in ("media_content", "media_thumbnail"):
+        for item in entry.get(key) or []:
+            url = str(item.get("url", "")).strip()
+            if url:
+                return url
+    for key in ("content", "summary"):
+        block = str(entry.get(key, ""))
+        match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', block)
+        if match:
+            return match.group(1)
+    return ""
+
+
 def _clean_summary(entry: Any, limit: int = 400) -> str:
     summary = _strip_html(str(entry.get("summary", "")))
     outlet = entry.get("source", {})
@@ -251,6 +270,7 @@ def select_articles(
                     source=outlet_name or source_name,
                     published=published,
                     summary=_clean_summary(entry),
+                    image_url=_entry_image(entry),
                     keyword_match=_matches_sustainability(text),
                 )
             )
@@ -266,18 +286,28 @@ def select_articles(
 
 
 def build_headlines_md(articles: list[Article]) -> str:
-    lines = [f"- [{a.title}]({a.url}) — {a.source}" for a in articles]
+    lines = [f"- [{a.title}]({a.url})" for a in articles]
     return "\n".join(lines)
 
 
 def build_site_posts_md(posts: list[Article]) -> str:
-    lines = []
+    import html as html_module
+
+    blocks = []
     for post in posts:
-        line = f"- [{post.title}]({post.url})"
+        lines = []
+        if post.image_url:
+            alt = html_module.escape(post.title, quote=True)
+            src = html_module.escape(post.image_url, quote=True)
+            lines.append(
+                f'<a href="{post.url}"><img src="{src}" alt="{alt}" '
+                'style="width:100%;max-width:600px;height:auto;border-radius:4px;"></a>'
+            )
+        lines.append(f"**[{post.title}]({post.url})**")
         if post.summary:
-            line += f" — {post.summary}"
-        lines.append(line)
-    return "\n".join(lines)
+            lines.append(post.summary)
+        blocks.append("\n\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 def build_sections_prompt(articles: list[Article]) -> str:
@@ -296,7 +326,8 @@ def build_sections_prompt(articles: list[Article]) -> str:
         '"Net-zero & energy"; construction products, digital tools, and monitoring to '
         '"Technology"; completed or announced buildings and infrastructure to '
         '"Projects & case studies"; business, investment, and people moves to '
-        '"Industry news". Use "Other" only when nothing fits.\n'
+        '"Industry news"; academic papers, preprints, and peer-reviewed studies to '
+        '"Research & papers". Use "Other" only when nothing fits.\n'
         "Also write a short note (at most 15 words) for each item describing its significance "
         "for sustainable construction.\n"
         'Respond with strict JSON: {"assignments": [{"index": 0, "section": "Green materials", "note": "..."}]}.\n\n'
@@ -350,6 +381,11 @@ async def _categorize(articles: list[Article]) -> list[SectionAssignment]:
     return _parse_section_assignments(_extract_digest_text(response), len(articles))
 
 
+def _strip_leading_headings(text: str) -> str:
+    lines = [line for line in text.strip().splitlines() if not line.lstrip().startswith("#")]
+    return "\n".join(lines).strip()
+
+
 def render_digest(
     articles: list[Article],
     briefing: str,
@@ -358,8 +394,7 @@ def render_digest(
     site_posts: list[Article] | None = None,
 ) -> str:
     parts = [
-        f"# {SITE_NAME} — Weekly Digest — {date_str}",
-        f"## Market Briefing\n\n{briefing.strip()}",
+        f"## Market briefing — {date_str}\n\n{_strip_leading_headings(briefing)}",
     ]
     if site_posts:
         parts.append(f"## From {SITE_NAME}\n\n" + build_site_posts_md(site_posts))
@@ -382,7 +417,7 @@ def render_digest(
         items = by_section[name]
         if not items:
             continue
-        lines = [f"- [{a.title}]({a.url}) — {a.source}" + (f": {note}" if note else "") for a, note in items]
+        lines = [f"- [{a.title}]({a.url})" + (f": {note}" if note else "") for a, note in items]
         parts.append(f"## {name}\n\n" + "\n".join(lines))
     return "\n\n".join(parts) + "\n"
 
@@ -512,7 +547,8 @@ def build_briefing_prompt(articles: list[Article], date_str: str) -> str:
         "1. Two or three paragraphs of prose covering the most significant developments: "
         "policy and building standards changes, materials innovation and carbon reduction, "
         "energy performance, notable projects, investment, and industry moves. Cite sources "
-        "inline as markdown links like [edie](https://...) using the item URLs.\n"
+        "by turning a short phrase inside each sentence into a markdown link to the item URL, "
+        "like [modular techniques](https://...) — never append outlet names in brackets.\n"
         "2. A bold heading **Key developments** followed by 4-6 short bullet points, one fact each.\n"
         "Use only facts present in the items; never invent figures or events. At most 350 words.\n\n"
         f"{joined}"
@@ -541,6 +577,7 @@ def select_site_articles(
                 source=SITE_NAME,
                 published=published,
                 summary=_clean_summary(entry, limit=200),
+                image_url=_entry_image(entry),
                 from_site=True,
             )
         )
@@ -631,6 +668,7 @@ def _digest_html(body_markdown: str) -> str:
         "ul { padding-left: 20px; margin: 8px 0; }"
         "li { margin-bottom: 10px; }"
         "p { margin: 8px 0; }"
+        "img { max-width: 100%; height: auto; border-radius: 4px; }"
         "a { color: #2e7d32; text-decoration: underline; }"
         "hr { border: none; border-top: 1px solid #dddddd; margin: 20px 0; }"
         ".footer { font-size: 12px; color: #777777; margin-top: 24px;"
