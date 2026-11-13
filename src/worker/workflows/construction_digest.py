@@ -19,7 +19,8 @@ from pydantic import BaseModel
 
 SITE_NAME = "Sustainable Construction Review"
 SITE_TAGLINE = "News and insight for the low-carbon built environment"
-SITE_FEED = "https://sustainableconstructionreview.com/feed/"
+SITE_URL = "https://sustainableconstructionreview.com"
+SITE_FEED = f"{SITE_URL}/feed/"
 DEFAULT_SENDER = "newsletter@sustainableconstructionreview.com"
 DEFAULT_RECIPIENT = "newsletter@sustainableconstructionreview.com"
 SUMMARY_MODEL = "mistral-small-latest"
@@ -733,12 +734,65 @@ async def fetch_articles(lookback_hours: int, max_candidates: int = MAX_CANDIDAT
     return FetchResult(articles=articles, stats=stats)
 
 
+def _wp_api_headers() -> dict[str, str]:
+    headers = {"User-Agent": "sustainable-construction-digest/0.1"}
+    token = os.environ.get("WP_DIGEST_TOKEN", "").strip()
+    if token:
+        headers["x-digest-token"] = token
+    return headers
+
+
+def _fetch_site_post_details() -> dict[str, dict[str, Any]]:
+    import httpx
+
+    try:
+        response = httpx.get(
+            f"{SITE_URL}/wp-json/wp/v2/posts",
+            params={"per_page": 20, "_embed": ""},
+            timeout=20.0,
+            follow_redirects=True,
+            headers=_wp_api_headers(),
+        )
+        response.raise_for_status()
+    except Exception as error:
+        print(f"site post details fetch failed: {error}")
+        return {}
+    details: dict[str, dict[str, Any]] = {}
+    for post in response.json():
+        link = str(post.get("link", "")).rstrip("/")
+        embedded = post.get("_embedded") or {}
+        media = (embedded.get("wp:featuredmedia") or [{}])[0]
+        categories = [
+            str(term.get("name", ""))
+            for group in embedded.get("wp:term") or []
+            for term in group or []
+        ]
+        details[link] = {
+            "image_url": str(media.get("source_url", "")).strip(),
+            "categories": categories,
+        }
+    return details
+
+
+def merge_site_details(posts: list[Article], details: dict[str, dict[str, Any]]) -> list[Article]:
+    """Attach featured images and drop aggregated 'Industry news' roundup posts."""
+    kept: list[Article] = []
+    for post in posts:
+        info = details.get(post.url.rstrip("/"), {})
+        if "Industry news" in info.get("categories", []):
+            continue
+        post.image_url = post.image_url or info.get("image_url", "")
+        kept.append(post)
+    return kept
+
+
 @workflows.activity(start_to_close_timeout=timedelta(seconds=60), retry_policy_max_attempts=1)
 async def fetch_site_articles(max_posts: int, lookback_hours: int) -> SiteArticlesResult:
     """Fetch recent posts from the site's own RSS feed; failures never break the run."""
     try:
         entries = _parse_feed(_fetch_feed(SITE_FEED))
-        posts = select_site_articles(entries, lookback_hours, max_posts)
+        posts = select_site_articles(entries, lookback_hours, max_posts * 3)
+        posts = merge_site_details(posts, _fetch_site_post_details())[:max_posts]
         return SiteArticlesResult(articles=posts, status=f"fetched {len(posts)} posts")
     except Exception as error:
         print(f"site feed fetch failed: {error}")

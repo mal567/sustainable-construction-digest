@@ -626,3 +626,30 @@ class TestDigestInputDefaults:
         assert data.max_site_posts == 5
         assert data.require_approval is False
         assert data.dry_run is False
+
+
+class TestSitePostDetails:
+    def test_merge_site_details_attaches_images_and_drops_roundups(self):
+        posts = [
+            Article(title="Timber towers", url="https://site.com/a", source="SCR", from_site=True),
+            Article(title="News roundup", url="https://site.com/b", source="SCR", from_site=True),
+        ]
+        details = {
+            "https://site.com/a": {
+                "image_url": "https://site.com/img.jpg",
+                "categories": ["Research", "Technology"],
+            },
+            "https://site.com/b": {
+                "image_url": "https://site.com/b.jpg",
+                "categories": ["Industry news"],
+            },
+        }
+        kept = construction_digest.merge_site_details(posts, details)
+        assert [p.url for p in kept] == ["https://site.com/a"]
+        assert kept[0].image_url == "https://site.com/img.jpg"
+
+    def test_merge_site_details_keeps_posts_without_details(self):
+        posts = [Article(title="Timber towers", url="https://site.com/a/", source="SCR", from_site=True)]
+        kept = construction_digest.merge_site_details(posts, {})
+        assert len(kept) == 1
+        assert kept[0].image_url == ""
